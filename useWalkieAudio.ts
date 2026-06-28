@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+﻿import { useEffect, useRef, useState, useCallback } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 interface AudioStreamConfig {
@@ -36,7 +36,7 @@ export function useWalkieAudio(config: AudioStreamConfig) {
   const getAudioContext = useCallback(async () => {
     if (!audioContextRef.current || audioContextRef.current.state === "closed") {
       audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({
-        sampleRate: 16000,
+        
       });
     }
     if (audioContextRef.current.state === "suspended") {
@@ -62,7 +62,7 @@ export function useWalkieAudio(config: AudioStreamConfig) {
       };
       source.start(0);
     } catch (err) {
-      console.error("[Walkie] 재생 오류:", err);
+      console.error("[Walkie] ?ъ깮 ?ㅻ쪟:", err);
       isPlayingRef.current = false;
     }
   }, [getAudioContext]);
@@ -75,7 +75,7 @@ export function useWalkieAudio(config: AudioStreamConfig) {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
-          sampleRate: 16000,
+          
           channelCount: 1,
         },
       });
@@ -139,8 +139,8 @@ export function useWalkieAudio(config: AudioStreamConfig) {
         },
       });
     } catch (err) {
-      console.error("[Walkie] 마이크 오류:", err);
-      alert("마이크 권한이 필요합니다.");
+      console.error("[Walkie] 留덉씠???ㅻ쪟:", err);
+      alert("留덉씠??沅뚰븳???꾩슂?⑸땲??");
     }
   }, [config, getAudioContext]);
 
@@ -167,7 +167,7 @@ export function useWalkieAudio(config: AudioStreamConfig) {
     config.onStateChange?.("idle");
   }, [config]);
 
-  // 개별 채널 구독
+  // 媛쒕퀎 梨꾨꼸 援щ룆
   useEffect(() => {
     if (!supabaseUrl || !supabaseKey) return;
     const supabase = createClient(supabaseUrl, supabaseKey);
@@ -213,7 +213,7 @@ export function useWalkieAudio(config: AudioStreamConfig) {
     return () => { channel.unsubscribe(); };
   }, [config.channelName, config.userId]);
 
-  // 전체통화 채널 구독
+  // ?꾩껜?듯솕 梨꾨꼸 援щ룆
   useEffect(() => {
     if (!supabaseUrl || !supabaseKey) return;
     const supabase = createClient(supabaseUrl, supabaseKey);
@@ -255,7 +255,7 @@ export function useWalkieAudio(config: AudioStreamConfig) {
     return () => { bch.unsubscribe(); };
   }, [config.userId]);
 
-  // 자동 채널 전환용 전역 알림 채널
+  // ?먮룞 梨꾨꼸 ?꾪솚???꾩뿭 ?뚮┝ 梨꾨꼸
   useEffect(() => {
     if (!supabaseUrl || !supabaseKey) return;
     const supabase = createClient(supabaseUrl, supabaseKey);
