@@ -51,7 +51,7 @@ export function useWalkieAudio(config: AudioStreamConfig) {
     try {
       const audioContext = await getAudioContext();
       const audioData = audioQueueRef.current.shift()!;
-      const buffer = audioContext.createBuffer(1, audioData.length, 16000);
+      const buffer = audioContext.createBuffer(1, audioData.length, audioContext.sampleRate);
       buffer.getChannelData(0).set(audioData);
       const source = audioContext.createBufferSource();
       source.buffer = buffer;
