@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+﻿import { useEffect, useRef, useState, useCallback } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 interface AudioStreamConfig {
@@ -61,7 +61,7 @@ export function useWalkieAudio(config: AudioStreamConfig) {
       };
       source.start(0);
     } catch (err) {
-      console.error("[Walkie] 재생 오류:", err);
+      console.error("[Walkie] ?ъ깮 ?ㅻ쪟:", err);
       isPlayingRef.current = false;
     }
   }, [getAudioContext]);
@@ -82,19 +82,19 @@ export function useWalkieAudio(config: AudioStreamConfig) {
       const audioContext = await getAudioContext();
       const source = audioContext.createMediaStreamSource(stream);
 
-      // 노이즈 게이트 - 작은 소리(에코) 차단
+      // ?몄씠利?寃뚯씠??- ?묒? ?뚮━(?먯퐫) 李⑤떒
       const processor = audioContext.createScriptProcessor(4096, 1, 1);
       const targetChannel = isBroadcast ? broadcastChannelRef.current : channelRef.current;
 
       processor.onaudioprocess = (e) => {
         if (!isTransmittingRef.current) return;
 
-        // 수신 중이면 마이크 완전 차단 (에코 방지)
+        // ?섏떊 以묒씠硫?留덉씠???꾩쟾 李⑤떒 (?먯퐫 諛⑹?)
         if (isReceivingRef.current) return;
 
         const inputData = e.inputBuffer.getChannelData(0);
 
-        // 노이즈 게이트: 일정 임계값 이하 소리 차단
+        // ?몄씠利?寃뚯씠?? ?쇱젙 ?꾧퀎媛??댄븯 ?뚮━ 李⑤떒
         const maxVal = Math.max(...Array.from(inputData).map(Math.abs));
         if (maxVal < 0.02) return;
 
@@ -129,8 +129,8 @@ export function useWalkieAudio(config: AudioStreamConfig) {
         payload: { senderName: config.userName, senderId: config.userId, isBroadcast },
       });
     } catch (err) {
-      console.error("[Walkie] 마이크 오류:", err);
-      alert("마이크 권한이 필요합니다.");
+      console.error("[Walkie] 留덉씠???ㅻ쪟:", err);
+      alert("留덉씠??沅뚰븳???꾩슂?⑸땲??");
     }
   }, [config, getAudioContext]);
 
@@ -156,7 +156,7 @@ export function useWalkieAudio(config: AudioStreamConfig) {
     config.onStateChange?.("idle");
   }, [config]);
 
-  // 개별 채널 구독
+  // 媛쒕퀎 梨꾨꼸 援щ룆
   useEffect(() => {
     if (!supabaseUrl || !supabaseKey) return;
     const supabase = createClient(supabaseUrl, supabaseKey);
@@ -173,6 +173,7 @@ export function useWalkieAudio(config: AudioStreamConfig) {
         for (let i = 0; i < int16.length; i++) {
           float32[i] = int16[i] / 32768;
         }
+        if (audioQueueRef.current.length > 3) audioQueueRef.current = audioQueueRef.current.slice(-2);
         audioQueueRef.current.push(float32);
         playNextInQueue();
       })
@@ -199,7 +200,7 @@ export function useWalkieAudio(config: AudioStreamConfig) {
     return () => { channel.unsubscribe(); };
   }, [config.channelName, config.userId]);
 
-  // 전체통화 채널 구독
+  // ?꾩껜?듯솕 梨꾨꼸 援щ룆
   useEffect(() => {
     if (!supabaseUrl || !supabaseKey) return;
     const supabase = createClient(supabaseUrl, supabaseKey);
@@ -216,6 +217,7 @@ export function useWalkieAudio(config: AudioStreamConfig) {
         for (let i = 0; i < int16.length; i++) {
           float32[i] = int16[i] / 32768;
         }
+        if (audioQueueRef.current.length > 3) audioQueueRef.current = audioQueueRef.current.slice(-2);
         audioQueueRef.current.push(float32);
         playNextInQueue();
       })
@@ -243,7 +245,7 @@ export function useWalkieAudio(config: AudioStreamConfig) {
     return () => { bch.unsubscribe(); };
   }, [config.userId]);
 
-  // 자동 채널 전환용 전역 알림 채널
+  // ?먮룞 梨꾨꼸 ?꾪솚???꾩뿭 ?뚮┝ 梨꾨꼸
   useEffect(() => {
     if (!supabaseUrl || !supabaseKey) return;
     const supabase = createClient(supabaseUrl, supabaseKey);
