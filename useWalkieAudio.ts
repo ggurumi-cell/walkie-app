@@ -1,4 +1,4 @@
-﻿import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 interface AudioStreamConfig {
@@ -29,7 +29,7 @@ export function useWalkieAudio(config: AudioStreamConfig) {
   const isReceivingRef = useRef(false);
   const audioQueueRef = useRef<Float32Array[]>([]);
   const isPlayingRef = useRef(false);
-  const gainNodeRef = useRef<GainNode | null>(null);
+  const nextPlayTimeRef = useRef(0);
 
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || "";
   const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
@@ -44,25 +44,38 @@ export function useWalkieAudio(config: AudioStreamConfig) {
     return audioContextRef.current;
   }, []);
 
-  const playNextInQueue = useCallback(async () => {
-    if (isPlayingRef.current || audioQueueRef.current.length === 0) return;
-    isPlayingRef.current = true;
+  // 스케줄링 방식으로 끊김 없이 재생
+  const scheduleAudio = useCallback(async (float32: Float32Array) => {
     try {
       const audioContext = await getAudioContext();
-      const audioData = audioQueueRef.current.shift()!;
-      const buffer = audioContext.createBuffer(1, audioData.length, audioContext.sampleRate);
-      buffer.getChannelData(0).set(audioData);
+      const sampleRate = audioContext.sampleRate;
+      const buffer = audioContext.createBuffer(1, float32.length, sampleRate);
+      buffer.getChannelData(0).set(float32);
+
       const source = audioContext.createBufferSource();
+
+      // 다이나믹 컴프레서 - 음량 균일하게
+      const compressor = audioContext.createDynamicsCompressor();
+      compressor.threshold.value = -24;
+      compressor.knee.value = 30;
+      compressor.ratio.value = 12;
+      compressor.attack.value = 0.003;
+      compressor.release.value = 0.25;
+
       source.buffer = buffer;
-      source.connect(audioContext.destination);
-      source.onended = () => {
-        isPlayingRef.current = false;
-        playNextInQueue();
-      };
-      source.start(0);
+      source.connect(compressor);
+      compressor.connect(audioContext.destination);
+
+      // 현재 시간보다 뒤처졌으면 즉시 재생
+      const now = audioContext.currentTime;
+      if (nextPlayTimeRef.current < now) {
+        nextPlayTimeRef.current = now + 0.05; // 50ms 버퍼
+      }
+
+      source.start(nextPlayTimeRef.current);
+      nextPlayTimeRef.current += buffer.duration;
     } catch (err) {
-      console.error("[Walkie] ?ъ깮 ?ㅻ쪟:", err);
-      isPlayingRef.current = false;
+      console.error("[Walkie] 재생 오류:", err);
     }
   }, [getAudioContext]);
 
@@ -81,22 +94,16 @@ export function useWalkieAudio(config: AudioStreamConfig) {
       mediaStreamRef.current = stream;
       const audioContext = await getAudioContext();
       const source = audioContext.createMediaStreamSource(stream);
-
-      // ?몄씠利?寃뚯씠??- ?묒? ?뚮━(?먯퐫) 李⑤떒
-      const processor = audioContext.createScriptProcessor(4096, 1, 1);
+      const processor = audioContext.createScriptProcessor(2048, 1, 1);
       const targetChannel = isBroadcast ? broadcastChannelRef.current : channelRef.current;
 
       processor.onaudioprocess = (e) => {
         if (!isTransmittingRef.current) return;
-
-        // ?섏떊 以묒씠硫?留덉씠???꾩쟾 李⑤떒 (?먯퐫 諛⑹?)
-        if (isReceivingRef.current) return;
+        if (isReceivingRef.current) return; // 수신 중 마이크 차단
 
         const inputData = e.inputBuffer.getChannelData(0);
-
-        // ?몄씠利?寃뚯씠?? ?쇱젙 ?꾧퀎媛??댄븯 ?뚮━ 李⑤떒
         const maxVal = Math.max(...Array.from(inputData).map(Math.abs));
-        if (maxVal < 0.02) return;
+        if (maxVal < 0.015) return; // 노이즈 게이트
 
         const int16 = new Int16Array(inputData.length);
         for (let i = 0; i < inputData.length; i++) {
@@ -110,6 +117,7 @@ export function useWalkieAudio(config: AudioStreamConfig) {
             senderName: config.userName,
             senderId: config.userId,
             audioData: Array.from(int16),
+            sampleRate: audioContext.sampleRate,
             timestamp: Date.now(),
           },
         });
@@ -129,8 +137,8 @@ export function useWalkieAudio(config: AudioStreamConfig) {
         payload: { senderName: config.userName, senderId: config.userId, isBroadcast },
       });
     } catch (err) {
-      console.error("[Walkie] 留덉씠???ㅻ쪟:", err);
-      alert("留덉씠??沅뚰븳???꾩슂?⑸땲??");
+      console.error("[Walkie] 마이크 오류:", err);
+      alert("마이크 권한이 필요합니다.");
     }
   }, [config, getAudioContext]);
 
@@ -156,7 +164,17 @@ export function useWalkieAudio(config: AudioStreamConfig) {
     config.onStateChange?.("idle");
   }, [config]);
 
-  // 媛쒕퀎 梨꾨꼸 援щ룆
+  const handleAudioChunk = useCallback((p: any) => {
+    if (p.senderId === config.userId) return;
+    const int16 = new Int16Array(p.audioData);
+    const float32 = new Float32Array(int16.length);
+    for (let i = 0; i < int16.length; i++) {
+      float32[i] = int16[i] / 32768;
+    }
+    scheduleAudio(float32);
+  }, [config.userId, scheduleAudio]);
+
+  // 개별 채널 구독
   useEffect(() => {
     if (!supabaseUrl || !supabaseKey) return;
     const supabase = createClient(supabaseUrl, supabaseKey);
@@ -165,22 +183,12 @@ export function useWalkieAudio(config: AudioStreamConfig) {
     });
 
     channel
-      .on("broadcast", { event: "audio_chunk" }, (payload: any) => {
-        const p = payload.payload;
-        if (p.senderId === config.userId) return;
-        const int16 = new Int16Array(p.audioData);
-        const float32 = new Float32Array(int16.length);
-        for (let i = 0; i < int16.length; i++) {
-          float32[i] = int16[i] / 32768;
-        }
-        if (audioQueueRef.current.length > 3) audioQueueRef.current = audioQueueRef.current.slice(-2);
-        audioQueueRef.current.push(float32);
-        playNextInQueue();
-      })
+      .on("broadcast", { event: "audio_chunk" }, (payload: any) => handleAudioChunk(payload.payload))
       .on("broadcast", { event: "transmit_start" }, (payload: any) => {
         const p = payload.payload;
         if (p.senderId === config.userId) return;
         isReceivingRef.current = true;
+        nextPlayTimeRef.current = 0;
         setIsReceiving(true);
         setReceivingFrom(p.senderName);
         config.onStateChange?.("receiving");
@@ -200,7 +208,7 @@ export function useWalkieAudio(config: AudioStreamConfig) {
     return () => { channel.unsubscribe(); };
   }, [config.channelName, config.userId]);
 
-  // ?꾩껜?듯솕 梨꾨꼸 援щ룆
+  // 전체통화 채널 구독
   useEffect(() => {
     if (!supabaseUrl || !supabaseKey) return;
     const supabase = createClient(supabaseUrl, supabaseKey);
@@ -209,22 +217,12 @@ export function useWalkieAudio(config: AudioStreamConfig) {
     });
 
     bch
-      .on("broadcast", { event: "audio_chunk" }, (payload: any) => {
-        const p = payload.payload;
-        if (p.senderId === config.userId) return;
-        const int16 = new Int16Array(p.audioData);
-        const float32 = new Float32Array(int16.length);
-        for (let i = 0; i < int16.length; i++) {
-          float32[i] = int16[i] / 32768;
-        }
-        if (audioQueueRef.current.length > 3) audioQueueRef.current = audioQueueRef.current.slice(-2);
-        audioQueueRef.current.push(float32);
-        playNextInQueue();
-      })
+      .on("broadcast", { event: "audio_chunk" }, (payload: any) => handleAudioChunk(payload.payload))
       .on("broadcast", { event: "transmit_start" }, (payload: any) => {
         const p = payload.payload;
         if (p.senderId === config.userId) return;
         isReceivingRef.current = true;
+        nextPlayTimeRef.current = 0;
         setIsReceiving(true);
         setReceivingFrom(p.senderName);
         config.onStateChange?.("receiving");
@@ -245,7 +243,7 @@ export function useWalkieAudio(config: AudioStreamConfig) {
     return () => { bch.unsubscribe(); };
   }, [config.userId]);
 
-  // ?먮룞 梨꾨꼸 ?꾪솚???꾩뿭 ?뚮┝ 梨꾨꼸
+  // 자동 채널 전환용 전역 알림 채널
   useEffect(() => {
     if (!supabaseUrl || !supabaseKey) return;
     const supabase = createClient(supabaseUrl, supabaseKey);
