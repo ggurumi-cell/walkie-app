@@ -121,7 +121,7 @@ export function useWalkieAudio(config: AudioStreamConfig) {
       source.connect(highPassFilter);
       highPassFilter.connect(lowPassFilter);
       lowPassFilter.connect(processor);
-      processor.connect(audioContext.destination);
+      
 
       processorRef.current = processor;
       isTransmittingRef.current = true;
