@@ -1,6 +1,7 @@
-import { useState, useEffect } from "react";
-import { LogOut, Radio, Users } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { Radio, Users, Volume2 } from "lucide-react";
 import { useWalkieAudio } from "./useWalkieAudio";
+import { createClient } from "@supabase/supabase-js";
 
 interface WalkieUser {
   id: number;
@@ -15,26 +16,41 @@ interface WalkieAppProps {
 
 type TransmitState = "idle" | "transmitting" | "receiving";
 
-// ✅ 채널명 대칭화 함수 - A↔B 항상 동일한 채널 사용
 function getChannelName(userId1: number, userId2: number): string {
   const [a, b] = [userId1, userId2].sort((x, y) => x - y);
   return `walkie-channel-${a}-${b}`;
 }
 
+interface CallLog {
+  id: string;
+  senderName: string;
+  receiverName: string;
+  isBroadcast: boolean;
+  startedAt: Date;
+}
+
 export default function WalkieApp({ currentUser, onLogout }: WalkieAppProps) {
   const [selectedUser, setSelectedUser] = useState<WalkieUser | null>(null);
+  const [prevSelectedUser, setPrevSelectedUser] = useState<WalkieUser | null>(null);
   const [transmitState, setTransmitState] = useState<TransmitState>("idle");
   const [allUsers, setAllUsers] = useState<WalkieUser[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [statusMsg, setStatusMsg] = useState("");
+  const [isBroadcasting, setIsBroadcasting] = useState(false);
+  const [broadcastAlert, setBroadcastAlert] = useState<string | null>(null);
+  const [incomingAlert, setIncomingAlert] = useState<string | null>(null);
+  const [callLogs, setCallLogs] = useState<CallLog[]>([]);
+  const allUsersRef = useRef<WalkieUser[]>([]);
+  const isBroadcastingRef = useRef(false);
 
-  // 사용자 목록 로드 (Supabase에서)
+  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+  const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+  useEffect(() => { allUsersRef.current = allUsers; }, [allUsers]);
+
+  // 사용자 목록 로드
   useEffect(() => {
-    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-    const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-
     if (!supabaseUrl || !supabaseKey) {
-      // Supabase 미설정 시 데모 유저
       setAllUsers([
         { id: 1, name: "홍길동", employeeId: "EMP001" },
         { id: 2, name: "김철수", employeeId: "EMP002" },
@@ -43,58 +59,136 @@ export default function WalkieApp({ currentUser, onLogout }: WalkieAppProps) {
       setIsLoading(false);
       return;
     }
-
-    import("@supabase/supabase-js").then(({ createClient }) => {
-      const supabase = createClient(supabaseUrl, supabaseKey);
-      supabase
-        .from("walkie_users")
-        .select("id, name, employee_id")
-        .neq("id", currentUser.id)
-        .then(({ data, error }) => {
-          if (error) console.error("[Walkie] 유저 로드 실패:", error);
-          if (data) {
-            setAllUsers(data.map((u: any) => ({
-              id: u.id,
-              name: u.name,
-              employeeId: u.employee_id,
-            })));
-          }
-          setIsLoading(false);
-        });
-    });
+    const supabase = createClient(supabaseUrl, supabaseKey);
+    supabase
+      .from("walkie_users")
+      .select("id, name, employee_id")
+      .neq("id", currentUser.id)
+      .then(({ data, error }) => {
+        if (error) console.error("[Walkie] 유저 로드 실패:", error);
+        if (data) {
+          setAllUsers(data.map((u: any) => ({
+            id: u.id,
+            name: u.name,
+            employeeId: u.employee_id,
+          })));
+        }
+        setIsLoading(false);
+      });
   }, [currentUser.id]);
+
+  // 통화 로그 저장 함수
+  const addCallLog = (senderName: string, receiverName: string, isBroadcast: boolean) => {
+    const now = new Date();
+    const newLog: CallLog = {
+      id: Date.now().toString(),
+      senderName,
+      receiverName,
+      isBroadcast,
+      startedAt: now,
+    };
+    setCallLogs(prev => {
+      // 24시간 지난 로그 제거 + 07시 기준 초기화
+      const cutoff = new Date();
+      cutoff.setHours(7, 0, 0, 0);
+      if (now < cutoff) cutoff.setDate(cutoff.getDate() - 1);
+      return [...prev.filter(l => l.startedAt >= cutoff), newLog];
+    });
+  };
 
   const channelName = selectedUser
     ? getChannelName(currentUser.id, selectedUser.id)
-    : "walkie-idle";
+    : `walkie-idle-${currentUser.id}`;
 
   const audio = useWalkieAudio({
     channelName,
     userId: currentUser.id,
     userName: currentUser.name,
     onStateChange: (state) => {
-      setTransmitState(state);
-      if (state === "receiving") setStatusMsg(`🔊 ${audio.receivingFrom || "상대방"}님 송신 중`);
-      if (state === "idle") setStatusMsg("");
+      if (!isBroadcastingRef.current) {
+        setTransmitState(state);
+        if (state === "idle") setStatusMsg("");
+      }
     },
     onReceiveAudio: ({ senderName }) => {
-      setStatusMsg(`🔊 ${senderName}님의 음성 수신 중...`);
+      if (!isBroadcastingRef.current) {
+        setStatusMsg(`🔊 ${senderName}님의 음성 수신 중...`);
+      }
+    },
+    onIncomingCall: (senderName, senderId) => {
+      // 수신자 화면에서 발신자 자동 선택
+      const caller = allUsersRef.current.find(u => u.id === senderId);
+      if (caller) setSelectedUser(caller);
+      setIncomingAlert(`📻 ${senderName}님이 호출 중...`);
+      setTimeout(() => setIncomingAlert(null), 3000);
+    },
+    onBroadcastStart: (senderName) => {
+      // 전체통화 수신: 개별통화 상태 저장 후 전체통화로 전환
+      isBroadcastingRef.current = true;
+      setIsBroadcasting(true);
+      setTransmitState("receiving");
+      setBroadcastAlert(`📢 ${senderName}님의 전체통화`);
+      setStatusMsg(`📢 ${senderName}님 전체통화 중...`);
+      addCallLog(senderName, "전체", true);
+    },
+    onBroadcastEnd: () => {
+      // 전체통화 종료: 개별통화 원상태 복귀
+      isBroadcastingRef.current = false;
+      setIsBroadcasting(false);
+      setBroadcastAlert(null);
+      setTransmitState("idle");
+      setStatusMsg("");
     },
   });
 
+  const handleUserSelect = (user: WalkieUser) => {
+    if (transmitState === "transmitting") audio.stopTransmitting();
+    setSelectedUser(user);
+    setStatusMsg("");
+  };
+
   const handlePTT = async () => {
-    if (!selectedUser) {
-      alert("무전할 상대를 먼저 선택해주세요.");
-      return;
-    }
+    if (!selectedUser) { alert("무전할 상대를 먼저 선택해주세요."); return; }
     if (transmitState === "receiving") return;
 
     if (transmitState === "idle") {
-      await audio.startTransmitting();
+      // 수신자에게 자동 채널 전환 신호 전송
+      if (supabaseUrl && supabaseKey) {
+        const supabase = createClient(supabaseUrl, supabaseKey);
+        supabase.channel("walkie-notify-global").send({
+          type: "broadcast",
+          event: "call_request",
+          payload: {
+            senderName: currentUser.name,
+            senderId: currentUser.id,
+            targetId: selectedUser.id,
+          },
+        });
+      }
+      await audio.startTransmitting(false);
       setStatusMsg(`🎤 ${selectedUser.name}님에게 송신 중...`);
+      addCallLog(currentUser.name, selectedUser.name, false);
     } else if (transmitState === "transmitting") {
-      audio.stopTransmitting();
+      audio.stopTransmitting(false);
       setStatusMsg("");
+    }
+  };
+
+  const handleBroadcastPTT = async () => {
+    if (isBroadcasting && transmitState === "transmitting") {
+      audio.stopTransmitting(true);
+      isBroadcastingRef.current = false;
+      setIsBroadcasting(false);
+      setTransmitState("idle");
+      setStatusMsg("");
+    } else {
+      if (transmitState === "transmitting") audio.stopTransmitting(false);
+      isBroadcastingRef.current = true;
+      setIsBroadcasting(true);
+      await audio.startTransmitting(true);
+      setTransmitState("transmitting");
+      setStatusMsg("📢 전체통화 송신 중...");
+      addCallLog(currentUser.name, "전체", true);
     }
   };
 
@@ -123,7 +217,31 @@ export default function WalkieApp({ currentUser, onLogout }: WalkieAppProps) {
         </div>
       </div>
 
-      <div style={{ maxWidth: 480, margin: "0 auto", padding: "24px 16px" }}>
+      <div style={{ maxWidth: 480, margin: "0 auto", padding: "24px 16px 120px" }}>
+
+        {/* 📢 전체통화 수신 알림 배너 */}
+        {broadcastAlert && (
+          <div style={{
+            background: "#fef08a", border: "2px solid #eab308",
+            borderRadius: 12, padding: "16px", marginBottom: 16,
+            fontWeight: 700, color: "#713f12", fontSize: 16,
+            textAlign: "center", animation: "pulse 0.8s infinite",
+          }}>
+            {broadcastAlert}
+          </div>
+        )}
+
+        {/* 📻 개별 호출 알림 */}
+        {incomingAlert && !broadcastAlert && (
+          <div style={{
+            background: "#dbeafe", border: "1px solid #93c5fd",
+            borderRadius: 10, padding: "12px 16px", marginBottom: 16,
+            fontWeight: 600, color: "#1e40af", fontSize: 15, textAlign: "center",
+          }}>
+            {incomingAlert}
+          </div>
+        )}
+
         {/* 동료 목록 */}
         <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e2e8f0", padding: 20, marginBottom: 16 }}>
           <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12, color: "#1e293b", display: "flex", alignItems: "center", gap: 8 }}>
@@ -136,19 +254,12 @@ export default function WalkieApp({ currentUser, onLogout }: WalkieAppProps) {
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {allUsers.map(user => (
-                <button
-                  key={user.id}
-                  onClick={() => { setSelectedUser(user); setStatusMsg(""); audio.stopTransmitting(); }}
-                  style={{
-                    padding: "12px 16px",
-                    borderRadius: 10,
-                    border: selectedUser?.id === user.id ? "2px solid #22c55e" : "1px solid #e2e8f0",
-                    background: selectedUser?.id === user.id ? "#f0fdf4" : "#f8fafc",
-                    cursor: "pointer",
-                    textAlign: "left",
-                    transition: "all 0.15s",
-                  }}
-                >
+                <button key={user.id} onClick={() => handleUserSelect(user)} style={{
+                  padding: "12px 16px", borderRadius: 10,
+                  border: selectedUser?.id === user.id ? "2px solid #22c55e" : "1px solid #e2e8f0",
+                  background: selectedUser?.id === user.id ? "#f0fdf4" : "#f8fafc",
+                  cursor: "pointer", textAlign: "left", transition: "all 0.15s",
+                }}>
                   <div style={{ fontWeight: 600, color: "#1e293b" }}>{user.name}</div>
                   <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 2 }}>{user.employeeId}</div>
                 </button>
@@ -164,51 +275,29 @@ export default function WalkieApp({ currentUser, onLogout }: WalkieAppProps) {
               <p style={{ color: "#64748b", margin: 0 }}>
                 상대방: <strong style={{ color: "#1e293b" }}>{selectedUser.name}</strong>
               </p>
-
-              {/* 상태 메시지 */}
               {statusMsg && (
                 <div style={{
-                  width: "100%",
-                  padding: "12px 16px",
-                  borderRadius: 10,
-                  background: transmitState === "transmitting" ? "#f0fdf4" : "#eff6ff",
-                  border: `1px solid ${transmitState === "transmitting" ? "#86efac" : "#bfdbfe"}`,
-                  color: transmitState === "transmitting" ? "#15803d" : "#1d4ed8",
-                  fontWeight: 600,
-                  textAlign: "center",
-                  fontSize: 15,
+                  width: "100%", padding: "12px 16px", borderRadius: 10,
+                  background: isBroadcasting ? "#fef9c3" : transmitState === "transmitting" ? "#f0fdf4" : "#eff6ff",
+                  border: `1px solid ${isBroadcasting ? "#fde047" : transmitState === "transmitting" ? "#86efac" : "#bfdbfe"}`,
+                  color: isBroadcasting ? "#713f12" : transmitState === "transmitting" ? "#15803d" : "#1d4ed8",
+                  fontWeight: 600, textAlign: "center", fontSize: 15,
                 }}>
                   {statusMsg}
                 </div>
               )}
-
-              {/* 거대 PTT 버튼 */}
-              <button
-                onClick={handlePTT}
-                disabled={transmitState === "receiving"}
-                style={{
-                  width: "100%",
-                  height: 120,
-                  borderRadius: 16,
-                  background: transmitState === "receiving" ? "#93c5fd" : bgColor,
-                  border: "none",
-                  color: "#fff",
-                  fontSize: 18,
-                  fontWeight: 700,
-                  cursor: transmitState === "receiving" ? "not-allowed" : "pointer",
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 8,
-                  transition: "all 0.2s",
-                  boxShadow: transmitState === "transmitting" ? "0 0 0 6px rgba(34,197,94,0.3)" : "none",
-                }}
-              >
+              <button onClick={handlePTT} disabled={transmitState === "receiving" || isBroadcasting} style={{
+                width: "100%", height: 120, borderRadius: 16,
+                background: (transmitState === "receiving" || isBroadcasting) ? "#93c5fd" : bgColor,
+                border: "none", color: "#fff", fontSize: 18, fontWeight: 700,
+                cursor: (transmitState === "receiving" || isBroadcasting) ? "not-allowed" : "pointer",
+                display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8,
+                transition: "all 0.2s",
+                boxShadow: transmitState === "transmitting" && !isBroadcasting ? "0 0 0 6px rgba(34,197,94,0.3)" : "none",
+              }}>
                 <Radio size={32} />
-                <span>{btnText}</span>
+                <span>{isBroadcasting && transmitState !== "transmitting" ? "🔒 전체통화 중" : btnText}</span>
               </button>
-
               <p style={{ fontSize: 12, color: "#94a3b8", margin: 0, textAlign: "center" }}>
                 버튼을 눌러 말하고, 다시 누르면 송신이 종료됩니다
               </p>
@@ -221,12 +310,58 @@ export default function WalkieApp({ currentUser, onLogout }: WalkieAppProps) {
           )}
         </div>
 
-        {/* 채널 정보 (디버그용) */}
+        {/* 통화 로그 */}
+        {callLogs.length > 0 && (
+          <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e2e8f0", padding: 16, marginTop: 16 }}>
+            <h3 style={{ fontSize: 14, fontWeight: 600, color: "#475569", marginBottom: 10 }}>📋 오늘의 통화 기록</h3>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {callLogs.slice(-10).reverse().map(log => (
+                <div key={log.id} style={{ fontSize: 12, color: "#64748b", padding: "6px 10px", background: log.isBroadcast ? "#fef9c3" : "#f8fafc", borderRadius: 8 }}>
+                  {log.isBroadcast ? "📢" : "📻"} {log.senderName} → {log.receiverName}
+                  <span style={{ float: "right", color: "#94a3b8" }}>
+                    {log.startedAt.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {selectedUser && (
           <div style={{ marginTop: 12, padding: "8px 12px", background: "#f1f5f9", borderRadius: 8, fontSize: 12, color: "#64748b" }}>
             📡 채널: {channelName}
           </div>
         )}
+      </div>
+
+      {/* 하단 고정 전체통화 버튼 */}
+      <div style={{
+        position: "fixed", bottom: 0, left: 0, right: 0,
+        background: "#fff", borderTop: "2px solid #e2e8f0",
+        padding: "12px 24px", display: "flex", alignItems: "center", gap: 12,
+        boxShadow: "0 -4px 12px rgba(0,0,0,0.08)",
+      }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 2 }}>전체통화</div>
+          <div style={{ fontSize: 11, color: "#cbd5e1" }}>모든 동료에게 동시 송신</div>
+        </div>
+        <button
+          onClick={handleBroadcastPTT}
+          disabled={transmitState === "receiving" && !isBroadcasting}
+          style={{
+            width: 80, height: 80, borderRadius: "50%",
+            background: isBroadcasting && transmitState === "transmitting" ? "#ef4444" :
+                        transmitState === "receiving" && !isBroadcasting ? "#94a3b8" : "#f59e0b",
+            border: "none", color: "#fff", fontSize: 13, fontWeight: 700,
+            cursor: transmitState === "receiving" && !isBroadcasting ? "not-allowed" : "pointer",
+            display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4,
+            boxShadow: isBroadcasting && transmitState === "transmitting" ? "0 0 0 6px rgba(239,68,68,0.3)" : "0 4px 12px rgba(245,158,11,0.4)",
+            transition: "all 0.2s",
+          }}
+        >
+          <Volume2 size={24} />
+          <span>{isBroadcasting && transmitState === "transmitting" ? "종료" : "전체"}</span>
+        </button>
       </div>
     </div>
   );

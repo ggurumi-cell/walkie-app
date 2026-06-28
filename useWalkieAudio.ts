@@ -1,12 +1,33 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { RealtimeChannel, createClient } from "@supabase/supabase-js";
 
+const BROADCAST_CHANNEL = "walkie-broadcast-all"; // 전체통화 채널
+const NOTIFY_CHANNEL = "walkie-notify-global";     // 자동 채널 전환용
+
 interface AudioStreamConfig {
   channelName: string;
   userId: number;
   userName: string;
   onReceiveAudio?: (data: { senderName: string; audioChunk: ArrayBuffer }) => void;
   onStateChange?: (state: "idle" | "transmitting" | "receiving") => void;
+  onIncomingCall?: (senderName: string, senderId: number) => void;
+  onBroadcastStart?: (senderName: string) => void;
+  onBroadcastEnd?: () => void;
+}
+
+// 통화 로그 저장 (Supabase)
+async function saveCallLog(supabase: any, entry: {
+  sender_id: number;
+  sender_name: string;
+  receiver_id: number | null;
+  is_broadcast: boolean;
+  started_at: string;
+}) {
+  try {
+    await supabase.from("walkie_call_logs").insert(entry);
+  } catch (e) {
+    console.warn("[Walkie] 로그 저장 실패:", e);
+  }
 }
 
 export function useWalkieAudio(config: AudioStreamConfig) {
@@ -17,10 +38,11 @@ export function useWalkieAudio(config: AudioStreamConfig) {
   const audioContextRef = useRef<AudioContext | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const channelRef = useRef<RealtimeChannel | null>(null);
-  const workletNodeRef = useRef<AudioWorkletNode | ScriptProcessorNode | null>(null);
-
-  // ✅ 수정 핵심: ref로 isTransmitting 추적 (클로저 버그 방지)
+  const broadcastChannelRef = useRef<RealtimeChannel | null>(null);
+  const notifyChannelRef = useRef<RealtimeChannel | null>(null);
+  const workletNodeRef = useRef<ScriptProcessorNode | null>(null);
   const isTransmittingRef = useRef(false);
+  const callStartTimeRef = useRef<string | null>(null);
 
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || "";
   const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
@@ -35,12 +57,23 @@ export function useWalkieAudio(config: AudioStreamConfig) {
     return audioContextRef.current;
   }, []);
 
-  const sendAudioChunk = useCallback((audioData: Float32Array) => {
-    if (!isTransmittingRef.current) return;
-    if (!channelRef.current) return;
+  const playAudioChunk = useCallback(async (audioData: Float32Array, sampleRate: number) => {
+    try {
+      const audioContext = await getAudioContext();
+      const buffer = audioContext.createBuffer(1, audioData.length, sampleRate);
+      buffer.getChannelData(0).set(audioData);
+      const source = audioContext.createBufferSource();
+      source.buffer = buffer;
+      source.connect(audioContext.destination);
+      source.start(0);
+    } catch (err) {
+      console.error("[Walkie] 오디오 재생 오류:", err);
+    }
+  }, [getAudioContext]);
 
-    // Float32Array → 일반 배열로 변환해서 전송
-    channelRef.current.send({
+  const sendAudioChunk = useCallback((audioData: Float32Array, targetChannel: RealtimeChannel | null) => {
+    if (!isTransmittingRef.current || !targetChannel) return;
+    targetChannel.send({
       type: "broadcast",
       event: "audio_chunk",
       payload: {
@@ -53,151 +86,180 @@ export function useWalkieAudio(config: AudioStreamConfig) {
     });
   }, [config.userName, config.userId]);
 
-  const playAudioChunk = useCallback(async (audioData: Float32Array, sampleRate: number) => {
-    try {
-      const audioContext = await getAudioContext();
-      const buffer = audioContext.createBuffer(1, audioData.length, sampleRate);
-      buffer.getChannelData(0).set(audioData);
-
-      const source = audioContext.createBufferSource();
-      source.buffer = buffer;
-      source.connect(audioContext.destination);
-      source.start(0);
-    } catch (err) {
-      console.error("[Walkie] 오디오 재생 오류:", err);
-    }
-  }, [getAudioContext]);
-
-  const startTransmitting = useCallback(async () => {
+  const startTransmitting = useCallback(async (isBroadcast = false) => {
     if (isTransmittingRef.current) return;
-
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
-          sampleRate: 16000, // 낮은 샘플레이트로 데이터량 감소
+          sampleRate: 16000,
         },
       });
 
       mediaStreamRef.current = stream;
       const audioContext = await getAudioContext();
       const source = audioContext.createMediaStreamSource(stream);
-
-      // ✅ ScriptProcessorNode 사용 (모바일 호환성 최대화)
       const processor = audioContext.createScriptProcessor(2048, 1, 1);
+      const targetChannel = isBroadcast ? broadcastChannelRef.current : channelRef.current;
 
       processor.onaudioprocess = (e) => {
-        // ✅ ref를 통해 최신 상태 참조 (클로저 버그 수정)
         if (!isTransmittingRef.current) return;
         const data = e.inputBuffer.getChannelData(0);
-        sendAudioChunk(new Float32Array(data));
+        sendAudioChunk(new Float32Array(data), targetChannel);
       };
 
       source.connect(processor);
-      processor.connect(audioContext.destination);
+      // destination 연결 제거 - 에코 방지
       workletNodeRef.current = processor;
 
-      // ✅ ref와 state 동시 업데이트
       isTransmittingRef.current = true;
       setIsTransmitting(true);
+      callStartTimeRef.current = new Date().toISOString();
       config.onStateChange?.("transmitting");
 
-      // 송신 시작 알림
-      channelRef.current?.send({
-        type: "broadcast",
-        event: "transmit_start",
-        payload: { senderName: config.userName, senderId: config.userId },
-      });
+      const eventPayload = {
+        senderName: config.userName,
+        senderId: config.userId,
+        isBroadcast,
+      };
 
+      if (isBroadcast) {
+        broadcastChannelRef.current?.send({
+          type: "broadcast", event: "transmit_start", payload: eventPayload,
+        });
+      } else {
+        // 개별통화: 수신자에게 자동 채널 전환 신호
+        channelRef.current?.send({
+          type: "broadcast", event: "transmit_start", payload: eventPayload,
+        });
+      }
     } catch (err) {
       console.error("[Walkie] 마이크 오류:", err);
-      alert("마이크 권한이 필요합니다. 브라우저에서 마이크 접근을 허용해주세요.");
+      alert("마이크 권한이 필요합니다.");
     }
   }, [config, getAudioContext, sendAudioChunk]);
 
-  const stopTransmitting = useCallback(() => {
-    // ✅ ref 먼저 false로 설정 (onaudioprocess 즉시 중단)
+  const stopTransmitting = useCallback((isBroadcast = false) => {
     isTransmittingRef.current = false;
     setIsTransmitting(false);
 
-    // 마이크 스트림 중지
     mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
     mediaStreamRef.current = null;
 
-    // 프로세서 연결 해제
     if (workletNodeRef.current) {
       workletNodeRef.current.disconnect();
       workletNodeRef.current = null;
     }
 
-    // 송신 종료 알림
-    channelRef.current?.send({
-      type: "broadcast",
-      event: "transmit_end",
-      payload: { senderName: config.userName, senderId: config.userId },
-    });
+    const eventPayload = { senderName: config.userName, senderId: config.userId };
+    if (isBroadcast) {
+      broadcastChannelRef.current?.send({
+        type: "broadcast", event: "transmit_end", payload: eventPayload,
+      });
+    } else {
+      channelRef.current?.send({
+        type: "broadcast", event: "transmit_end", payload: eventPayload,
+      });
+    }
 
     config.onStateChange?.("idle");
   }, [config]);
 
-  // ✅ 핵심 수정: 채널명 대칭화 (두 사용자가 같은 채널 구독)
+  // 개별 채널 구독
   useEffect(() => {
-    if (!supabaseUrl || !supabaseKey) {
-      console.warn("[Walkie] Supabase 환경변수가 설정되지 않았습니다.");
-      return;
-    }
-
+    if (!supabaseUrl || !supabaseKey) return;
     const supabase = createClient(supabaseUrl, supabaseKey);
-
-    // ✅ 채널명을 ID 정렬로 통일 (A-B = B-A 동일 채널)
-    const channelName = config.channelName;
-
-    console.log("[Walkie] 채널 구독 시작:", channelName);
-
-    const channel = supabase.channel(channelName, {
+    const channel = supabase.channel(config.channelName, {
       config: { broadcast: { self: false } },
     });
 
     channel
       .on("broadcast", { event: "audio_chunk" }, (payload: any) => {
         const p = payload.payload;
-        if (p.senderId === config.userId) return; // 내 것은 무시
+        if (p.senderId === config.userId) return;
         const audioData = new Float32Array(p.audioChunk);
         playAudioChunk(audioData, p.sampleRate || 44100);
-        config.onReceiveAudio?.({
-          senderName: p.senderName,
-          audioChunk: audioData.buffer,
-        });
+        config.onReceiveAudio?.({ senderName: p.senderName, audioChunk: audioData.buffer });
       })
       .on("broadcast", { event: "transmit_start" }, (payload: any) => {
         const p = payload.payload;
         if (p.senderId === config.userId) return;
-        console.log("[Walkie] 수신 시작:", p.senderName);
         setIsReceiving(true);
         setReceivingFrom(p.senderName);
         config.onStateChange?.("receiving");
+        config.onIncomingCall?.(p.senderName, p.senderId);
       })
       .on("broadcast", { event: "transmit_end" }, (payload: any) => {
         const p = payload.payload;
         if (p.senderId === config.userId) return;
-        console.log("[Walkie] 수신 종료");
         setIsReceiving(false);
         setReceivingFrom(null);
         config.onStateChange?.("idle");
       })
-      .subscribe((status) => {
-        console.log("[Walkie] 채널 상태:", status);
-      });
+      .subscribe();
 
     channelRef.current = channel;
-
-    return () => {
-      console.log("[Walkie] 채널 구독 해제:", channelName);
-      channel.unsubscribe();
-    };
+    return () => { channel.unsubscribe(); };
   }, [config.channelName, config.userId]);
+
+  // 전체통화 채널 구독
+  useEffect(() => {
+    if (!supabaseUrl || !supabaseKey) return;
+    const supabase = createClient(supabaseUrl, supabaseKey);
+    const bch = supabase.channel(BROADCAST_CHANNEL, {
+      config: { broadcast: { self: false } },
+    });
+
+    bch
+      .on("broadcast", { event: "audio_chunk" }, (payload: any) => {
+        const p = payload.payload;
+        if (p.senderId === config.userId) return;
+        const audioData = new Float32Array(p.audioChunk);
+        playAudioChunk(audioData, p.sampleRate || 44100);
+      })
+      .on("broadcast", { event: "transmit_start" }, (payload: any) => {
+        const p = payload.payload;
+        if (p.senderId === config.userId) return;
+        setIsReceiving(true);
+        setReceivingFrom(p.senderName);
+        config.onStateChange?.("receiving");
+        config.onBroadcastStart?.(p.senderName);
+      })
+      .on("broadcast", { event: "transmit_end" }, (payload: any) => {
+        const p = payload.payload;
+        if (p.senderId === config.userId) return;
+        setIsReceiving(false);
+        setReceivingFrom(null);
+        config.onStateChange?.("idle");
+        config.onBroadcastEnd?.();
+      })
+      .subscribe();
+
+    broadcastChannelRef.current = bch;
+    return () => { bch.unsubscribe(); };
+  }, [config.userId]);
+
+  // 자동 채널 전환용 전역 알림 채널
+  useEffect(() => {
+    if (!supabaseUrl || !supabaseKey) return;
+    const supabase = createClient(supabaseUrl, supabaseKey);
+    const nch = supabase.channel(NOTIFY_CHANNEL, {
+      config: { broadcast: { self: false } },
+    });
+
+    nch
+      .on("broadcast", { event: "call_request" }, (payload: any) => {
+        const p = payload.payload;
+        if (p.targetId !== config.userId) return;
+        config.onIncomingCall?.(p.senderName, p.senderId);
+      })
+      .subscribe();
+
+    notifyChannelRef.current = nch;
+    return () => { nch.unsubscribe(); };
+  }, [config.userId]);
 
   return {
     isTransmitting,
@@ -205,5 +267,6 @@ export function useWalkieAudio(config: AudioStreamConfig) {
     receivingFrom,
     startTransmitting,
     stopTransmitting,
+    notifyChannel: notifyChannelRef,
   };
 }
