@@ -44,6 +44,12 @@ export default function WalkieApp({ currentUser, onLogout }: WalkieAppProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [teamFilter, setTeamFilter] = useState("전체");
   const [favorites, setFavorites] = useState<Set<number>>(new Set());
+  const [showPwModal, setShowPwModal] = useState(false);
+  const [currentPw, setCurrentPw] = useState("");
+  const [newPw, setNewPw] = useState("");
+  const [confirmPw, setConfirmPw] = useState("");
+  const [pwError, setPwError] = useState("");
+  const [pwLoading, setPwLoading] = useState(false);
   const allUsersRef = useRef<WalkieUser[]>([]);
   const isBroadcastingRef = useRef(false);
 
@@ -94,6 +100,74 @@ export default function WalkieApp({ currentUser, onLogout }: WalkieAppProps) {
 
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
   const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+  // 비밀번호 변경
+  const handleChangePassword = async () => {
+    setPwError("");
+
+    if (!currentPw.trim() || !newPw.trim() || !confirmPw.trim()) {
+      setPwError("모든 항목을 입력해주세요.");
+      return;
+    }
+    if (newPw.trim().length < 4) {
+      setPwError("새 비밀번호는 4자리 이상이어야 합니다.");
+      return;
+    }
+    if (newPw.trim() !== confirmPw.trim()) {
+      setPwError("새 비밀번호가 일치하지 않습니다.");
+      return;
+    }
+    if (!supabaseUrl || !supabaseKey) {
+      setPwError("서버 설정 오류입니다.");
+      return;
+    }
+
+    setPwLoading(true);
+    try {
+      const supabase = createClient(supabaseUrl, supabaseKey);
+
+      // 현재 비밀번호 확인
+      const { data, error } = await supabase
+        .from("walkie_users")
+        .select("password")
+        .eq("id", currentUser.id)
+        .single();
+
+      if (error || !data) {
+        setPwError("사용자 확인에 실패했습니다.");
+        setPwLoading(false);
+        return;
+      }
+      if (data.password !== currentPw.trim()) {
+        setPwError("현재 비밀번호가 일치하지 않습니다.");
+        setPwLoading(false);
+        return;
+      }
+
+      const { error: updateError } = await supabase
+        .from("walkie_users")
+        .update({ password: newPw.trim() })
+        .eq("id", currentUser.id);
+
+      if (updateError) {
+        setPwError("비밀번호 변경에 실패했습니다.");
+        setPwLoading(false);
+        return;
+      }
+
+      alert("비밀번호가 변경되었습니다. 다시 로그인해주세요.");
+      setShowPwModal(false);
+      setCurrentPw("");
+      setNewPw("");
+      setConfirmPw("");
+      onLogout();
+    } catch (err) {
+      console.error("[Walkie] 비밀번호 변경 오류:", err);
+      setPwError("비밀번호 변경 중 오류가 발생했습니다.");
+    } finally {
+      setPwLoading(false);
+    }
+  };
 
   useEffect(() => { allUsersRef.current = allUsers; }, [allUsers]);
 
@@ -275,6 +349,9 @@ export default function WalkieApp({ currentUser, onLogout }: WalkieAppProps) {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <span style={{ fontWeight: 600, color: "#1e293b" }}>{currentUser.name}</span>
+          <button onClick={() => setShowPwModal(true)} style={{ padding: "6px 12px", border: "1px solid #e2e8f0", borderRadius: 8, background: "#fff", cursor: "pointer", fontSize: 13 }}>
+            비밀번호 변경
+          </button>
           <button onClick={onLogout} style={{ padding: "6px 12px", border: "1px solid #e2e8f0", borderRadius: 8, background: "#fff", cursor: "pointer", fontSize: 13 }}>
             로그아웃
           </button>
@@ -484,6 +561,74 @@ export default function WalkieApp({ currentUser, onLogout }: WalkieAppProps) {
           <span>{isBroadcasting && transmitState === "transmitting" ? "종료" : "전체"}</span>
         </button>
       </div>
+
+      {/* 비밀번호 변경 모달 */}
+      {showPwModal && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)",
+          display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 20,
+        }}>
+          <div style={{ background: "#fff", borderRadius: 16, padding: 28, width: "100%", maxWidth: 340 }}>
+            <h3 style={{ margin: "0 0 18px", fontSize: 17, color: "#1e293b" }}>비밀번호 변경</h3>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div>
+                <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#475569", marginBottom: 6 }}>현재 비밀번호</label>
+                <input
+                  type="password"
+                  value={currentPw}
+                  onChange={(e) => setCurrentPw(e.target.value)}
+                  disabled={pwLoading}
+                  style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 14, boxSizing: "border-box" }}
+                />
+              </div>
+              <div>
+                <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#475569", marginBottom: 6 }}>새 비밀번호</label>
+                <input
+                  type="password"
+                  value={newPw}
+                  onChange={(e) => setNewPw(e.target.value)}
+                  disabled={pwLoading}
+                  style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 14, boxSizing: "border-box" }}
+                />
+              </div>
+              <div>
+                <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#475569", marginBottom: 6 }}>새 비밀번호 확인</label>
+                <input
+                  type="password"
+                  value={confirmPw}
+                  onChange={(e) => setConfirmPw(e.target.value)}
+                  disabled={pwLoading}
+                  style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 14, boxSizing: "border-box" }}
+                />
+              </div>
+
+              {pwError && (
+                <div style={{ color: "#dc2626", fontSize: 13, textAlign: "center", padding: "8px", background: "#fef2f2", borderRadius: 8 }}>
+                  {pwError}
+                </div>
+              )}
+
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <button
+                  onClick={() => { setShowPwModal(false); setCurrentPw(""); setNewPw(""); setConfirmPw(""); setPwError(""); }}
+                  disabled={pwLoading}
+                  style={{ flex: 1, padding: "12px", borderRadius: 8, border: "1px solid #e2e8f0", background: "#fff", cursor: "pointer", fontSize: 14, fontWeight: 600, color: "#475569" }}
+                >
+                  취소
+                </button>
+                <button
+                  onClick={handleChangePassword}
+                  disabled={pwLoading}
+                  style={{ flex: 1, padding: "12px", borderRadius: 8, border: "none", background: pwLoading ? "#94a3b8" : "#22c55e", color: "#fff", cursor: pwLoading ? "not-allowed" : "pointer", fontSize: 14, fontWeight: 700 }}
+                >
+                  {pwLoading ? "변경 중..." : "변경하기"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
