@@ -138,13 +138,27 @@ export default function WalkieApp({ currentUser, onLogout }: WalkieAppProps) {
       startedAt: now,
     };
     setCallLogs(prev => {
-      // 24시간 지난 로그 제거 + 07시 기준 초기화
+      // 자정(00:00) 기준으로 오늘 기록만 유지
       const cutoff = new Date();
-      cutoff.setHours(7, 0, 0, 0);
-      if (now < cutoff) cutoff.setDate(cutoff.getDate() - 1);
+      cutoff.setHours(0, 0, 0, 0);
       return [...prev.filter(l => l.startedAt >= cutoff), newLog];
     });
   };
+
+  // 화면을 계속 켜둔 상태로 자정을 넘기면 자동으로 통화 기록 초기화
+  useEffect(() => {
+    const scheduleMidnightReset = () => {
+      const nextMidnight = new Date();
+      nextMidnight.setHours(24, 0, 0, 0); // 다음 자정
+      const delay = nextMidnight.getTime() - Date.now();
+      return setTimeout(() => {
+        setCallLogs([]);
+        scheduleMidnightReset();
+      }, delay);
+    };
+    const timerId = scheduleMidnightReset();
+    return () => clearTimeout(timerId);
+  }, []);
 
   const channelName = selectedUser
     ? getChannelName(currentUser.id, selectedUser.id)
