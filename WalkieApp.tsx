@@ -7,6 +7,7 @@ interface WalkieUser {
   id: number;
   name: string;
   employeeId: string;
+  team?: string;
 }
 
 interface WalkieAppProps {
@@ -40,8 +41,56 @@ export default function WalkieApp({ currentUser, onLogout }: WalkieAppProps) {
   const [broadcastAlert, setBroadcastAlert] = useState<string | null>(null);
   const [incomingAlert, setIncomingAlert] = useState<string | null>(null);
   const [callLogs, setCallLogs] = useState<CallLog[]>([]);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [teamFilter, setTeamFilter] = useState("전체");
+  const [favorites, setFavorites] = useState<Set<number>>(new Set());
   const allUsersRef = useRef<WalkieUser[]>([]);
   const isBroadcastingRef = useRef(false);
+
+  const favoritesStorageKey = `walkie_favorites_${currentUser.id}`;
+
+  // 즐겨찾기 불러오기 (직원별로 로컬 저장)
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(favoritesStorageKey);
+      if (saved) setFavorites(new Set(JSON.parse(saved)));
+    } catch (e) {
+      // 무시
+    }
+  }, [favoritesStorageKey]);
+
+  const toggleFavorite = (userId: number) => {
+    setFavorites(prev => {
+      const next = new Set(prev);
+      if (next.has(userId)) next.delete(userId);
+      else next.add(userId);
+      try {
+        localStorage.setItem(favoritesStorageKey, JSON.stringify([...next]));
+      } catch (e) {
+        // 무시
+      }
+      return next;
+    });
+  };
+
+  // 조 목록 (데이터에 실제 존재하는 조만 순서대로 표시)
+  const teamOptions = ["전체", "1 조", "2 조", "3 조", "4 조"].filter(
+    t => t === "전체" || allUsers.some(u => u.team === t)
+  );
+
+  // 검색 + 조 필터 + 즐겨찾기 상단고정 적용된 동료 목록
+  const displayedUsers = allUsers
+    .filter(u => teamFilter === "전체" || u.team === teamFilter)
+    .filter(u => {
+      const q = searchQuery.trim().toLowerCase();
+      if (!q) return true;
+      return u.name.toLowerCase().includes(q) || u.employeeId.toLowerCase().includes(q);
+    })
+    .sort((a, b) => {
+      const aFav = favorites.has(a.id) ? 1 : 0;
+      const bFav = favorites.has(b.id) ? 1 : 0;
+      return bFav - aFav;
+    });
 
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
   const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -62,7 +111,7 @@ export default function WalkieApp({ currentUser, onLogout }: WalkieAppProps) {
     const supabase = createClient(supabaseUrl, supabaseKey);
     supabase
       .from("walkie_users")
-      .select("id, name, employee_id")
+      .select("id, name, employee_id, team")
       .neq("id", currentUser.id)
       .then(({ data, error }) => {
         if (error) console.error("[Walkie] 유저 로드 실패:", error);
@@ -71,6 +120,7 @@ export default function WalkieApp({ currentUser, onLogout }: WalkieAppProps) {
             id: u.id,
             name: u.name,
             employeeId: u.employee_id,
+            team: u.team,
           })));
         }
         setIsLoading(false);
@@ -247,22 +297,76 @@ export default function WalkieApp({ currentUser, onLogout }: WalkieAppProps) {
           <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12, color: "#1e293b", display: "flex", alignItems: "center", gap: 8 }}>
             <Users size={18} /> 동료 목록
           </h2>
+
+          {/* 검색창 */}
+          <input
+            type="text"
+            placeholder="이름 또는 직원번호 검색"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            style={{
+              width: "100%", padding: "10px 14px", borderRadius: 10,
+              border: "1px solid #e2e8f0", fontSize: 14, marginBottom: 10,
+              boxSizing: "border-box",
+            }}
+          />
+
+          {/* 조 탭 */}
+          <div style={{ display: "flex", gap: 6, marginBottom: 12, overflowX: "auto" }}>
+            {teamOptions.map(team => (
+              <button
+                key={team}
+                onClick={() => setTeamFilter(team)}
+                style={{
+                  padding: "6px 14px", borderRadius: 999, whiteSpace: "nowrap",
+                  border: teamFilter === team ? "1px solid #22c55e" : "1px solid #e2e8f0",
+                  background: teamFilter === team ? "#22c55e" : "#fff",
+                  color: teamFilter === team ? "#fff" : "#475569",
+                  fontSize: 13, fontWeight: 600, cursor: "pointer",
+                }}
+              >
+                {team}
+              </button>
+            ))}
+          </div>
+
           {isLoading ? (
             <p style={{ color: "#94a3b8", textAlign: "center", padding: "20px 0" }}>불러오는 중...</p>
-          ) : allUsers.length === 0 ? (
-            <p style={{ color: "#94a3b8", textAlign: "center", padding: "20px 0" }}>다른 사용자가 없습니다</p>
+          ) : displayedUsers.length === 0 ? (
+            <p style={{ color: "#94a3b8", textAlign: "center", padding: "20px 0" }}>
+              {allUsers.length === 0 ? "다른 사용자가 없습니다" : "검색 결과가 없습니다"}
+            </p>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {allUsers.map(user => (
-                <button key={user.id} onClick={() => handleUserSelect(user)} style={{
-                  padding: "12px 16px", borderRadius: 10,
-                  border: selectedUser?.id === user.id ? "2px solid #22c55e" : "1px solid #e2e8f0",
-                  background: selectedUser?.id === user.id ? "#f0fdf4" : "#f8fafc",
-                  cursor: "pointer", textAlign: "left", transition: "all 0.15s",
+              {displayedUsers.map(user => (
+                <div key={user.id} style={{
+                  display: "flex", alignItems: "center", gap: 8,
                 }}>
-                  <div style={{ fontWeight: 600, color: "#1e293b" }}>{user.name}</div>
-                  <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 2 }}>{user.employeeId}</div>
-                </button>
+                  <button onClick={() => handleUserSelect(user)} style={{
+                    flex: 1, padding: "12px 16px", borderRadius: 10,
+                    border: selectedUser?.id === user.id ? "2px solid #22c55e" : "1px solid #e2e8f0",
+                    background: selectedUser?.id === user.id ? "#f0fdf4" : "#f8fafc",
+                    cursor: "pointer", textAlign: "left", transition: "all 0.15s",
+                  }}>
+                    <div style={{ fontWeight: 600, color: "#1e293b" }}>{user.name}</div>
+                    <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 2 }}>
+                      {user.employeeId}{user.team ? ` · ${user.team}` : ""}
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => toggleFavorite(user.id)}
+                    aria-label="즐겨찾기"
+                    style={{
+                      width: 40, height: 40, borderRadius: 10,
+                      border: "1px solid #e2e8f0",
+                      background: favorites.has(user.id) ? "#fefce8" : "#fff",
+                      color: favorites.has(user.id) ? "#eab308" : "#cbd5e1",
+                      fontSize: 18, cursor: "pointer", flexShrink: 0,
+                    }}
+                  >
+                    ★
+                  </button>
+                </div>
               ))}
             </div>
           )}
