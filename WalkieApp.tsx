@@ -269,28 +269,73 @@ export default function WalkieApp({ currentUser, onLogout }: WalkieAppProps) {
 
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "24px 16px 120px" }}>
 
-        {/* 📢 전체통화 수신 알림 배너 */}
-        {broadcastAlert && (
-          <div style={{
-            background: "#fef08a", border: "2px solid #eab308",
-            borderRadius: 12, padding: "16px", marginBottom: 16,
-            fontWeight: 700, color: "#713f12", fontSize: 16,
-            textAlign: "center", animation: "pulse 0.8s infinite",
-          }}>
-            {broadcastAlert}
-          </div>
-        )}
+        {/* 상단 고정 PTT 영역 - 스크롤해도 항상 화면에 보임 */}
+        <div style={{ position: "sticky", top: 0, zIndex: 20, background: "#f8fafc", paddingTop: 4, paddingBottom: 12 }}>
+          {/* 📢 전체통화 수신 알림 배너 */}
+          {broadcastAlert && (
+            <div style={{
+              background: "#fef08a", border: "2px solid #eab308",
+              borderRadius: 12, padding: "16px", marginBottom: 16,
+              fontWeight: 700, color: "#713f12", fontSize: 16,
+              textAlign: "center", animation: "pulse 0.8s infinite",
+            }}>
+              {broadcastAlert}
+            </div>
+          )}
 
-        {/* 📻 개별 호출 알림 */}
-        {incomingAlert && !broadcastAlert && (
-          <div style={{
-            background: "#dbeafe", border: "1px solid #93c5fd",
-            borderRadius: 10, padding: "12px 16px", marginBottom: 16,
-            fontWeight: 600, color: "#1e40af", fontSize: 15, textAlign: "center",
-          }}>
-            {incomingAlert}
+          {/* 📻 개별 호출 알림 */}
+          {incomingAlert && !broadcastAlert && (
+            <div style={{
+              background: "#dbeafe", border: "1px solid #93c5fd",
+              borderRadius: 10, padding: "12px 16px", marginBottom: 16,
+              fontWeight: 600, color: "#1e40af", fontSize: 15, textAlign: "center",
+            }}>
+              {incomingAlert}
+            </div>
+          )}
+
+          {/* PTT 버튼 영역 */}
+          <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e2e8f0", padding: 32, display: "flex", flexDirection: "column", alignItems: "center", gap: 20, boxShadow: "0 2px 8px rgba(0,0,0,0.04)" }}>
+            {selectedUser ? (
+              <>
+                <p style={{ color: "#64748b", margin: 0 }}>
+                  상대방: <strong style={{ color: "#1e293b" }}>{selectedUser.name}</strong>
+                </p>
+                {statusMsg && (
+                  <div style={{
+                    width: "100%", padding: "12px 16px", borderRadius: 10,
+                    background: isBroadcasting ? "#fef9c3" : transmitState === "transmitting" ? "#f0fdf4" : "#eff6ff",
+                    border: `1px solid ${isBroadcasting ? "#fde047" : transmitState === "transmitting" ? "#86efac" : "#bfdbfe"}`,
+                    color: isBroadcasting ? "#713f12" : transmitState === "transmitting" ? "#15803d" : "#1d4ed8",
+                    fontWeight: 600, textAlign: "center", fontSize: 15,
+                  }}>
+                    {statusMsg}
+                  </div>
+                )}
+                <button onClick={handlePTT} disabled={transmitState === "receiving" || isBroadcasting} style={{
+                  width: "100%", height: 120, borderRadius: 16,
+                  background: (transmitState === "receiving" || isBroadcasting) ? "#93c5fd" : bgColor,
+                  border: "none", color: "#fff", fontSize: 18, fontWeight: 700,
+                  cursor: (transmitState === "receiving" || isBroadcasting) ? "not-allowed" : "pointer",
+                  display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8,
+                  transition: "all 0.2s",
+                  boxShadow: transmitState === "transmitting" && !isBroadcasting ? "0 0 0 6px rgba(34,197,94,0.3)" : "none",
+                }}>
+                  <Radio size={32} />
+                  <span>{isBroadcasting && transmitState !== "transmitting" ? "🔒 전체통화 중" : btnText}</span>
+                </button>
+                <p style={{ fontSize: 12, color: "#94a3b8", margin: 0, textAlign: "center" }}>
+                  버튼을 눌러 말하고, 다시 누르면 송신이 종료됩니다
+                </p>
+              </>
+            ) : (
+              <div style={{ textAlign: "center", color: "#94a3b8", padding: "20px 0" }}>
+                <Radio size={48} style={{ marginBottom: 12, opacity: 0.3 }} />
+                <p style={{ margin: 0 }}>아래에서 무전할 상대를 선택하세요</p>
+              </div>
+            )}
           </div>
-        )}
+        </div>
 
         {/* 동료 목록 */}
         <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e2e8f0", padding: 20, marginBottom: 16 }}>
@@ -368,48 +413,6 @@ export default function WalkieApp({ currentUser, onLogout }: WalkieAppProps) {
                   </button>
                 </div>
               ))}
-            </div>
-          )}
-        </div>
-
-        {/* PTT 버튼 영역 */}
-        <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e2e8f0", padding: 32, display: "flex", flexDirection: "column", alignItems: "center", gap: 20 }}>
-          {selectedUser ? (
-            <>
-              <p style={{ color: "#64748b", margin: 0 }}>
-                상대방: <strong style={{ color: "#1e293b" }}>{selectedUser.name}</strong>
-              </p>
-              {statusMsg && (
-                <div style={{
-                  width: "100%", padding: "12px 16px", borderRadius: 10,
-                  background: isBroadcasting ? "#fef9c3" : transmitState === "transmitting" ? "#f0fdf4" : "#eff6ff",
-                  border: `1px solid ${isBroadcasting ? "#fde047" : transmitState === "transmitting" ? "#86efac" : "#bfdbfe"}`,
-                  color: isBroadcasting ? "#713f12" : transmitState === "transmitting" ? "#15803d" : "#1d4ed8",
-                  fontWeight: 600, textAlign: "center", fontSize: 15,
-                }}>
-                  {statusMsg}
-                </div>
-              )}
-              <button onClick={handlePTT} disabled={transmitState === "receiving" || isBroadcasting} style={{
-                width: "100%", height: 120, borderRadius: 16,
-                background: (transmitState === "receiving" || isBroadcasting) ? "#93c5fd" : bgColor,
-                border: "none", color: "#fff", fontSize: 18, fontWeight: 700,
-                cursor: (transmitState === "receiving" || isBroadcasting) ? "not-allowed" : "pointer",
-                display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8,
-                transition: "all 0.2s",
-                boxShadow: transmitState === "transmitting" && !isBroadcasting ? "0 0 0 6px rgba(34,197,94,0.3)" : "none",
-              }}>
-                <Radio size={32} />
-                <span>{isBroadcasting && transmitState !== "transmitting" ? "🔒 전체통화 중" : btnText}</span>
-              </button>
-              <p style={{ fontSize: 12, color: "#94a3b8", margin: 0, textAlign: "center" }}>
-                버튼을 눌러 말하고, 다시 누르면 송신이 종료됩니다
-              </p>
-            </>
-          ) : (
-            <div style={{ textAlign: "center", color: "#94a3b8", padding: "20px 0" }}>
-              <Radio size={48} style={{ marginBottom: 12, opacity: 0.3 }} />
-              <p style={{ margin: 0 }}>위에서 무전할 상대를 선택하세요</p>
             </div>
           )}
         </div>
